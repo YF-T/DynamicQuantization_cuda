@@ -12,7 +12,7 @@ def cdiv(a: int, b: int) -> int:
     return (a + b - 1) // b
 
 class V_Cache_Class(torch.nn.Module):
-    def __init__(self, bsz: int, max_seq_len: int, n_local_kv_heads: int, head_dim: int, device: str = "cuda:0", top_max_k: int = 16):
+    def __init__(self, bsz: int, max_seq_len: int, n_local_kv_heads: int, head_dim: int, device: str = "cuda:0", top_max_k: int = 32):
         super().__init__()
         self.bsz = bsz
         self.max_seq_len = max_seq_len
@@ -33,6 +33,9 @@ class V_Cache_Class(torch.nn.Module):
                                                   device=device)
         self.device = device
         self.top_max_k = top_max_k
+        self.restv = None
+        self.restvlen = 0
+        self.reststartpos = 0
 
 
     def save(self, new_v: torch.Tensor, start_pos: int, seqlen: int):
@@ -43,9 +46,41 @@ class V_Cache_Class(torch.nn.Module):
         if start_pos == 0:
             self.v_cache_exp_column_max = (torch.max(new_v, dim=1, keepdim=True).values.view(torch.int16) >> 10).to(
                 torch.uint8) & 0x1F
+            cuda_module.v_cache_save(self.v_cache_first_8,
+                                     self.v_cache_mid_4,
+                                     self.v_cache_last_4,
+                                     new_v.view(torch.uint8),
+                                     self.bsz,
+                                     self.n_local_kv_heads,
+                                     self.max_seq_len,
+                                     self.head_dim,
+                                     start_pos,
+                                     seqlen - seqlen % column_block)
+            self.restv = torch.zeros((self.bsz, column_block, self.n_local_kv_heads, self.head_dim), dtype=torch.half,
+                                     device=self.device)
+            self.restv[:, :seqlen % column_block, :, :] = new_v[:, seqlen - (seqlen % column_block):, :]
+            self.restvlen = seqlen % column_block
+            self.reststartpos = seqlen - self.restvlen
         else:
             self.v_cache_exp_column_max = torch.maximum(self.v_cache_exp_column_max,
                                                         (new_v.view(torch.int16) >> 10).to(torch.uint8) & 0x1F)
+            self.restv[:, self.restvlen:self.restvlen + seqlen, :, :] = new_v
+            self.restvlen += seqlen
+            if self.restvlen == column_block:
+                cuda_module.v_cache_save(self.v_cache_first_8,
+                                         self.v_cache_mid_4,
+                                         self.v_cache_last_4,
+                                         self.restv.view(torch.uint8),
+                                         self.bsz,
+                                         self.n_local_kv_heads,
+                                         self.max_seq_len,
+                                         self.head_dim,
+                                         self.reststartpos,
+                                         self.restvlen)
+                self.restvlen = self.restvlen % column_block
+                self.reststartpos += column_block
+                self.restv = torch.zeros((self.bsz, column_block, self.n_local_kv_heads, self.head_dim), dtype=torch.half,
+                                            device=self.device)
         """void v_cache_save(torch::Tensor &v_cache_first_8,
                   torch::Tensor &v_cache_mid_4,
                   torch::Tensor &v_cache_last_4,
@@ -56,16 +91,7 @@ class V_Cache_Class(torch.nn.Module):
                   const int head_dim,
                   const int start_pos,
                   const int seq_len);"""
-        cuda_module.v_cache_save(self.v_cache_first_8,
-                                    self.v_cache_mid_4,
-                                    self.v_cache_last_4,
-                                    new_v.view(torch.uint8),
-                                    self.bsz,
-                                    self.n_local_kv_heads,
-                                    self.max_seq_len,
-                                    self.head_dim,
-                                    start_pos,
-                                    seqlen)
+
 
     def test_compute(self, s: torch.Tensor, start_pos: int, seqlen: int, top_max_k: int):
         # test: find top-k
@@ -108,7 +134,10 @@ class V_Cache_Class(torch.nn.Module):
         assert s.shape == (self.bsz, self.n_local_kv_heads, 1, s.shape[-1]), f"s.shape: {s.shape} != {(self.bsz, self.n_local_kv_heads, 1, start_pos + seqlen)}"
         assert start_pos + seqlen <= self.max_seq_len, f"start_pos + seqlen: {start_pos + seqlen} > {self.max_seq_len}"
         assert start_pos == 0 or seqlen == 1, f"start_pos: {start_pos}, seqlen: {seqlen}"
-        test_o_exp = self.test_compute(s, start_pos, seqlen, self.top_max_k)
+        s_cut = s[:, :, :, :self.reststartpos]
+        s_test = s_cut if self.reststartpos else s
+        test_o_exp = self.test_compute(s_test, start_pos, seqlen, self.top_max_k)
+        # print("test_o_exp", test_o_exp)
 
         # calculate s_exp alignment
         fp16_exp_bias = 2 ** 4 - 1
@@ -133,17 +162,20 @@ class V_Cache_Class(torch.nn.Module):
         o = cuda_module.v_cache_compute(self.v_cache_first_8,
                                                 self.v_cache_mid_4,
                                                 self.v_cache_last_4,
-                                                s.view(torch.uint8),
+                                                s_cut.view(torch.uint8),
                                                 s_exp_expect_alignment_min,
                                                 self.bsz,
                                                 self.n_local_kv_heads,
                                                 self.max_seq_len,
                                                 self.head_dim,
-                                                s.shape[-1],
-                                                start_pos + seqlen,
+                                                s_cut.shape[-1],
+                                                self.reststartpos,
                                                 reference)
-        o_exp = (o.view(torch.int16) >> 10).to(torch.uint8) & 0x1F
         o = o.view(torch.half)
+        assert self.reststartpos + self.restvlen == start_pos + seqlen, f"self.reststartpos + self.restvlen: {self.reststartpos + self.restvlen} != {start_pos + seqlen}"
+        o += torch.matmul(s[:, :, :, self.reststartpos:start_pos + seqlen], self.restv.transpose(1, 2)[:, :, :self.restvlen, :])
+        o_exp = (o.view(torch.int16) >> 10).to(torch.uint8) & 0x1F
+        # print("o_exp", o_exp)
         return o
 
 

@@ -56,6 +56,7 @@
     &quot;WebServerToolWindowFactoryState&quot;: &quot;false&quot;,
     &quot;cf.first.check.clang-format&quot;: &quot;false&quot;,
     &quot;cidr.known.project.marker&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;D:/work-tanyifan/llama2/llama-main&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
@@ -69,7 +70,6 @@
   <component name="RunManager">
     <configuration name="k_cache_file" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="cuda_ver" />
-      <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <envs>
@@ -123,6 +123,16 @@
       <workItem from="1716432170188" duration="13842000" />
       <workItem from="1716532592970" duration="3039000" />
       <workItem from="1716628271350" duration="16000" />
+      <workItem from="1716860169994" duration="4237000" />
+      <workItem from="1716866186342" duration="6113000" />
+      <workItem from="1716881573846" duration="5452000" />
+      <workItem from="1716887207156" duration="2557000" />
+      <workItem from="1716890774459" duration="709000" />
+      <workItem from="1716903703856" duration="9522000" />
+      <workItem from="1716946720210" duration="16067000" />
+      <workItem from="1717408606122" duration="596000" />
+      <workItem from="1717573863210" duration="2951000" />
+      <workItem from="1717638214375" duration="1557000" />
     </task>
     <servers />
   </component>

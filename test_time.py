@@ -7,6 +7,10 @@ import os
 import numpy as np
 import math
 import time
+import sys
+from GEAR.gear import attention_gear
+from KIVI.models.kivi import attention_kivi
+import json
 
 base_path = "/u/user75/llama2/llama"
 q_path = os.path.join(base_path, "q_caches.pt")
@@ -199,10 +203,13 @@ def test(prefill_len: int, gen_len: int, model: list):
         o = attention_block.prefill(q, k, v, prefill_len, mask)
 
     # decoding
+    result = []
     for start_pos in range(prefill_len, prefill_len + gen_len):
         if start_pos % 50 == 0:
-            print("start_pos: ", start_pos)
+            print("token position: ", start_pos, "\t time: ", time.time() - start_time, "s")
             time_dict[start_pos] = time.time() - start_time
+            if time_dict[start_pos] > 300:
+                break
         for i, attention_block in enumerate(model):
             q = q_caches[i, :, start_pos:start_pos + 1, :, :]
             q = torch.repeat_interleave(q, bsz // q.shape[0], dim=0)
@@ -211,35 +218,106 @@ def test(prefill_len: int, gen_len: int, model: list):
             v = kv_caches[1, i, :, start_pos:start_pos + 1, :, :]
             v = torch.repeat_interleave(v, bsz // v.shape[0], dim=0)
             o = attention_block.decoding(q, k, v, start_pos, 1)
+            if start_pos % 50 == 0 and i % 8 == 3:
+                result.append(o.view(bsz, 1, n_local_kv_heads * head_dim))
 
     end_time = time.time()
-    print("time: ", end_time - start_time)
+    print("finish in time of: ", end_time - start_time, "s")
+    # print("time: ", end_time - start_time)
     # print("time_dict: ", time_dict)
     del model
-    return time_dict
+    result = torch.cat(result, dim=1).to("cpu")
+    return time_dict, result
 
 start_pos = 128
 # seqlen = 4000-128
 seqlen = 4000 - start_pos
-# test
-model = [attention(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device) for _ in range(layer_num)]
-print("test")
-time_dict = test(start_pos, seqlen, model)
-del model
-time.sleep(5)
-# test_ref
-model_ref = [attention_ref(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, gemm_cuda=False) for _ in range(layer_num)]
-print("test_ref")
-time_dict_ref = test(start_pos, seqlen, model_ref)
-del model_ref
-time.sleep(5)
-# test_whole
-model_p = [attention(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, reference=True) for _ in range(layer_num)]
-print("test_whole")
-time_dict_p = test(start_pos, seqlen, model_p)
-del model_p
-time.sleep(5)
 
-print("time_dict: ", time_dict)
-print("time_dict_p: ", time_dict_p)
-print("time_dict_ref: ", time_dict_ref)
+# # test_ref
+# model_ref = [attention_ref(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, gemm_cuda=False) for _ in range(layer_num)]
+# print("test_ref")
+# time_dict_ref, result_ref = test(start_pos, seqlen, model_ref)
+# del model_ref
+# time.sleep(5)
+# # test_whole
+# model_p = [attention(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, reference=True) for _ in range(layer_num)]
+# print("test_whole")
+# time_dict_p, result_p = test(start_pos, seqlen, model_p)
+# del model_p
+# time.sleep(5)
+# # test
+# model = [attention(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device) for _ in range(layer_num)]
+# print("test")
+# time_dict, result = test(start_pos, seqlen, model)
+# del model
+# time.sleep(5)
+# # test_gear
+# model_gear = [attention_gear(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device) for _ in range(layer_num)]
+# print("test_gear")
+# time_dict_gear, result_gear = test(start_pos, seqlen, model_gear)
+# del model_gear
+# time.sleep(5)
+# # test_kivi
+# model_kivi = [attention_kivi(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device) for _ in range(layer_num)]
+# print("test_kivi")
+# time_dict_kivi, result_kivi = test(start_pos, seqlen, model_kivi)
+# del model_kivi
+# time.sleep(5)
+# # test_kivi_12bit
+# model_kivi_12bit = [attention_kivi(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, bits=12) for _ in range(layer_num)]
+# print("test_kivi_12bit")
+# time_dict_kivi_12bit, result_kivi_12bit = test(start_pos, seqlen, model_kivi_12bit)
+# del model_kivi_12bit
+# time.sleep(5)
+
+
+
+# print("time_dict: ", time_dict)
+# print("time_dict_p: ", time_dict_p)
+# print("time_dict_ref: ", time_dict_ref)
+# print("time_dict_gear: ", time_dict_gear)
+# print("time_dict_kivi: ", time_dict_kivi)
+# print("time_dict_kivi_12bit: ", time_dict_kivi_12bit)
+
+# dict_result = {}
+# dict_result["time_dict"] = time_dict
+# dict_result["time_dict_p"] = time_dict_p
+# dict_result["time_dict_ref"] = time_dict_ref
+# dict_result["time_dict_gear"] = time_dict_gear
+# # dict_result["time_dict_kivi"] = time_dict_kivi
+# dict_result["time_dict_kivi_12bit"] = time_dict_kivi_12bit
+
+# with open("time_dict.json", "w") as f:
+#     json.dump(dict_result, f)
+
+if sys.argv[-1] == "alignment":
+    # test
+    model = [attention(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device) for _ in range(layer_num)]
+    print("test alignment")
+    time_dict, result = test(start_pos, seqlen, model)
+    print(time_dict)
+    del model
+elif sys.argv[-1] == "reference":
+    # test_whole
+    model_whole = [attention(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, reference=True) for _ in range(layer_num)]
+    print("test reference")
+    time_dict_whole, result_whole = test(start_pos, seqlen, model_whole)
+    del model_whole
+elif sys.argv[-1] == "torch":
+    # test_ref
+    model_ref = [attention_ref(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, gemm_cuda=False) for _ in range(layer_num)]
+    print("test torch")
+    time_dict_ref, result_ref = test(start_pos, seqlen, model_ref)
+    del model_ref
+elif sys.argv[-1] == "gear":
+    # test_gear
+    model_gear = [attention_gear(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device) for _ in range(layer_num)]
+    print("test gear")
+    time_dict_gear, result_gear = test(start_pos, seqlen, model_gear)
+    del model_gear
+elif sys.argv[-1] == "kivi":
+    # test_kivi
+    model_kivi = [attention_kivi(bsz, max_seq_len, n_local_kv_heads, head_dim, device=device, bits=12) for _ in range(layer_num)]
+    print("test kivi")
+    time_dict_kivi, result_kivi = test(start_pos, seqlen, model_kivi)
+    del model_kivi

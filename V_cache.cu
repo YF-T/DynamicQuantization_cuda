@@ -12,7 +12,7 @@
 //self.v_cache_mid_4     (bsz, n_local_kv_heads, max_seq_len, head_dim // 2)
 //self.v_cache_last_4    (bsz, n_local_kv_heads, max_seq_len, head_dim // 2)
 //xv                     (bsz, seqlen, n_local_kv_heads, head_dim)
-// grid  (bsz, n_local_kv_heads, seqlen)
+// grid  (bsz, n_local_kv_heads, 1)
 // block (head_dim // 2, 1, 1)
 __global__ void v_cache_save_kernel(unsigned char* v_cache_first_8_data,
                                     unsigned char* v_cache_mid_4_data,
@@ -24,18 +24,20 @@ __global__ void v_cache_save_kernel(unsigned char* v_cache_first_8_data,
                                     const int stride_batch_v_new,
                                     const int stride_seq_v_new,
                                     const int stride_head_v_new,
-                                    const int start_pos){
-    int pos = start_pos + blockIdx.z;
-    v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x) * 2]
-        = v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2) * 2 + 1];
-    v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x) * 2 + 1]
-        = v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2 + 1) * 2 + 1];
-    v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x)]
-        = (v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2) * 2] & 0xf0)
-                + ((v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2 + 1) * 2] & 0xf0) >> 4);
-    v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x)]
-        = ((v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2) * 2] & 0x0f) << 4)
-                + (v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2 + 1) * 2] & 0x0f);
+                                    const int start_pos,
+                                    const int seqlen){
+    for(int pos = start_pos; pos < start_pos + seqlen; ++pos){
+        v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x) * 2]
+                = v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2) * 2 + 1];
+        v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x) * 2 + 1]
+                = v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2 + 1) * 2 + 1];
+        v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x)]
+                = (v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2) * 2] & 0xf0)
+                  + ((v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2 + 1) * 2] & 0xf0) >> 4);
+        v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + pos * stride_seq_v_cache + threadIdx.x)]
+                = ((v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2) * 2] & 0x0f) << 4)
+                  + (v_new_data[(blockIdx.x * stride_batch_v_new + blockIdx.z * stride_seq_v_new + blockIdx.y * stride_head_v_new + threadIdx.x * 2 + 1) * 2] & 0x0f);
+    }
 }
 
 // 存储函数
@@ -58,8 +60,8 @@ void v_cache_save(torch::Tensor &v_cache_first_8,
     int stride_batch_v_cache = stride_head_v_cache * n_local_kv_heads;
     int stride_head_v_new = head_dim;
     int stride_seq_v_new = stride_head_v_new * n_local_kv_heads;
-    int stride_batch_v_new = stride_seq_v_new * seq_len;
-    dim3 grid(bsz, n_local_kv_heads, seq_len);
+    int stride_batch_v_new = stride_seq_v_new * v_new.size(1);
+    dim3 grid(bsz, n_local_kv_heads, 1);
     dim3 block(head_dim >> 1, 1, 1);
     v_cache_save_kernel<<<grid, block>>>(v_cache_first_8_data,
                                          v_cache_mid_4_data,
@@ -71,7 +73,8 @@ void v_cache_save(torch::Tensor &v_cache_first_8,
                                          stride_batch_v_new,
                                          stride_seq_v_new,
                                          stride_head_v_new,
-                                         start_pos);
+                                         start_pos,
+                                         seq_len);
 }
 
 // 预读取，测试数量级
@@ -158,7 +161,7 @@ torch::Tensor v_cache_test_compute(torch::Tensor &v_cache_first_8,
                                                  stride_batch_test_o,
                                                  stride_head_test_o,
                                                  top_max_k);
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
     return test_o;
 }
 
@@ -190,6 +193,11 @@ __global__ void v_cache_compute_kernel(unsigned char* v_cache_first_8_data,
     short s_exp_expect_alignment_min_data = s_exp_expect_alignment_min[(blockIdx.x * stride_batch_s_exp_expect_alignment_min + blockIdx.y)];
 //    short s_exp_expect_alignment_min_data = __ldg(s_exp_expect_alignment_min + (blockIdx.x * stride_batch_s_exp_expect_alignment_min + blockIdx.y));
     s_exp_expect_alignment_min_data <<= 10;
+    __shared__ unsigned char trick[2];
+    if (threadIdx.x == 0){
+        trick[0] = 0x00;
+        trick[1] = 0x88;
+    }
     for(int i = 0; i < start_pos_add_seqlen; ++i){
         unsigned short v_data_1;
         unsigned short v_data_2;
@@ -219,22 +227,28 @@ __global__ void v_cache_compute_kernel(unsigned char* v_cache_first_8_data,
 //                    v_data_1 += ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8;
 //                    v_data_2 += ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8;
 //            }
-            if (diff >= 0x0800) {
-                v_data_1 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8 + 0x0080;
-                v_data_2 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8 + 0x0080;
-            } else if (diff >= 0x0400) {
-                v_data_1 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8
-                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0) + 0x0008;
-                v_data_2 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8
-                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f) << 4 + 0x0008;
-            } else {
-                v_data_1 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8
-                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0)
-                            + ((unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0) >> 4;
-                v_data_2 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8
-                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f) << 4
-                            + (unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f;
-            }
+//            if (diff >= 0x0800) {
+//                v_data_1 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8 + 0x0080;
+//                v_data_2 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8 + 0x0080;
+//            } else if (diff >= 0x0400) {
+//                v_data_1 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8
+//                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0) + 0x0008;
+//                v_data_2 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8
+//                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f) << 4 + 0x0008;
+//            } else {
+//                v_data_1 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8
+//                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0)
+//                            + ((unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0) >> 4;
+//                v_data_2 = ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8
+//                            + ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f) << 4
+//                            + (unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f;
+//            }
+            unsigned char* v_data_1_first_ptr = &v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2];
+            unsigned char* v_data_2_first_ptr = &v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1];
+            unsigned char* v_data_mid_ptr = diff >= 0x0800 ? &trick[1] : &v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)];
+            unsigned char* v_data_last_ptr = diff >= 0x0400 ? ((diff >= 0x0800 ? &trick[0] : &trick[1])) : &v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)];
+            v_data_1 = (((unsigned short)*v_data_1_first_ptr) << 8) + (((unsigned short)*v_data_mid_ptr) & 0xf0) + ((((unsigned short)*v_data_last_ptr) & 0xf0) >> 4);
+            v_data_2 = (((unsigned short)*v_data_2_first_ptr) << 8) + ((((unsigned short)*v_data_mid_ptr) & 0x0f) << 4) + (((unsigned short)*v_data_last_ptr) & 0x0f);
 //            if (diff >= 0x0800) {
 //                v_data_1 = ((unsigned short)__ldg(v_cache_first_8_data + (blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2)) << 8 + 0x0080;
 //                v_data_2 = ((unsigned short)__ldg(v_cache_first_8_data + (blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1)) << 8 + 0x0080;
@@ -253,14 +267,27 @@ __global__ void v_cache_compute_kernel(unsigned char* v_cache_first_8_data,
 //            }
         } else {
             // 参考版本
-            v_data_1 = 0x0000;
-            v_data_2 = 0x0000;
-            v_data_1 += ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8;
-            v_data_2 += ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8;
-            v_data_1 += (unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0;
-            v_data_2 += ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f) << 4;
-            v_data_1 += ((unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0) >> 4;
-            v_data_2 += (unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f;
+            unsigned char* v_data_1_first_ptr = &v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2];
+            unsigned char* v_data_2_first_ptr = &v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1];
+            unsigned char* v_data_mid_ptr = &v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)];
+            unsigned char* v_data_last_ptr = &v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)];
+//            v_data_1 += ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2]) << 8;
+//            v_data_2 += ((unsigned short)v_cache_first_8_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1]) << 8;
+//            v_data_1 += (unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0;
+//            v_data_2 += ((unsigned short)v_cache_mid_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f) << 4;
+//            v_data_1 += ((unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0xf0) >> 4;
+//            v_data_2 += (unsigned short)v_cache_last_4_data[(blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)] & 0x0f;
+
+//            v_data_1 += ((unsigned short)*v_data_1_first_ptr) << 8;
+//            v_data_2 += ((unsigned short)*v_data_2_first_ptr) << 8;
+//            v_data_1 += (unsigned short)*v_data_mid_ptr & 0xf0;
+//            v_data_2 += ((unsigned short)*v_data_mid_ptr & 0x0f) << 4;
+//            v_data_1 += ((unsigned short)*v_data_last_ptr & 0xf0) >> 4;
+//            v_data_2 += (unsigned short)*v_data_last_ptr & 0x0f;
+
+            v_data_1 = (((unsigned short)*v_data_1_first_ptr) << 8) + (((unsigned short)*v_data_mid_ptr) & 0xf0) + ((((unsigned short)*v_data_last_ptr) & 0xf0) >> 4);
+            v_data_2 = (((unsigned short)*v_data_2_first_ptr) << 8) + ((((unsigned short)*v_data_mid_ptr) & 0x0f) << 4) + (((unsigned short)*v_data_last_ptr) & 0x0f);
+
 //            v_data_1 += ((unsigned short)__ldg(v_cache_first_8_data + (blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2)) << 8;
 //            v_data_2 += ((unsigned short)__ldg(v_cache_first_8_data + (blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x) * 2 + 1)) << 8;
 //            v_data_1 += (unsigned short)__ldg(v_cache_mid_4_data + (blockIdx.x * stride_batch_v_cache + blockIdx.y * stride_head_v_cache + i * stride_seq_v_cache + threadIdx.x)) & 0xf0;
@@ -270,6 +297,7 @@ __global__ void v_cache_compute_kernel(unsigned char* v_cache_first_8_data,
         }
 
         half2 temp_v = __halves2half2(__ushort_as_half(v_data_1), __ushort_as_half(v_data_2));
+//        half2 temp_v = __halves2half2(__ushort_as_half(0x3c00), __ushort_as_half(0x3c00));
         half2 temp_s = __halves2half2(s_data, s_data);
         result = __hfma2(temp_v, temp_s, result);
     }
@@ -339,6 +367,6 @@ torch::Tensor v_cache_compute(torch::Tensor &v_cache_first_8,
                                                        stride_head_o,
                                                        stride_batch_s_exp_expect_alignment_min,
                                                        start_pos_add_seqlen);
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
     return o;
 }

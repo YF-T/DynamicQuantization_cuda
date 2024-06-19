@@ -24,6 +24,7 @@ kv_caches = kv_caches[:, :, :, 0:token_len, :4, :64]
 # score_cache = torch.zeros((1, 1, 4, token_len, token_len), dtype=torch.int16)
 # q_caches = torch.zeros_like(q_caches, dtype=torch.int16)
 # kv_caches = torch.zeros_like(kv_caches, dtype=torch.int16)
+# score_caches = torch.zeros_like(score_caches, dtype=torch.int16)
 
 # q_caches = 0x3c00 + q_caches
 # kv_caches = 0x3c18 + kv_caches
@@ -39,7 +40,7 @@ kv_caches = kv_caches[:, :, :, 0:token_len, :4, :64]
 # kv_caches = (torch.zeros_like(kv_caches, dtype=torch.int16) + torch.tensor([0x3a00, 0x3b00, 0x3c00, 0x3d00] * 16,dtype=torch.int16)).view(torch.half)
 # score_caches = (torch.zeros_like(score_caches, dtype=torch.int16) + torch.tensor([0x3c00],dtype=torch.int16)).view(torch.half)
 
-total_seqlen = 128
+total_seqlen = 256
 
 #　input 64 output 128
 bsz = 1
@@ -65,8 +66,8 @@ def decoding_compute_k(start_pos: int, seqlen: int):
     k_new = torch.repeat_interleave(k_new, bsz // k_new.shape[0], dim=0)
     # my result
     k_cache_model.save(k_new, start_pos, seqlen)
-    result = k_cache_model.decoding_compute(q, start_pos, seqlen)[:, :, :, :start_pos + seqlen]
     result2 = k_cache_model.decoding_compute(q, start_pos, seqlen, reference=True)[:, :, :, :start_pos + seqlen]
+    result = k_cache_model.decoding_compute(q, start_pos, seqlen)[:, :, :, :start_pos + seqlen]
     # reference result
     k_total = kv_caches[0, 0, :, 0:start_pos + seqlen, :, :]
     k_total = k_total.to(gpu_device)
@@ -78,13 +79,14 @@ def decoding_compute_k(start_pos: int, seqlen: int):
     # print("q: ", q)
     # print("k_total: ", k_total)
     # print("k_total sum: ", torch.sum(k_total, dim=-1))
-    print("result shape: ", result.shape)
-    print(result)
-    print("result2 shape: ", result2.shape)
-    print(result2)
-    print("scores shape: ", scores.shape)
-    print(scores)
+    # print("result shape: ", result.shape)
+    # print(result)
+    # print("result2 shape: ", result2.shape)
+    # print(result2)
+    # print("scores shape: ", scores.shape)
+    # print(scores)
     print("stack result, result2, scores: ", torch.stack([result, result2, scores], dim=-1))
+    # print("first 8: ", k_cache_model.k_cache_first_8)
 
 def prefill_v(seqlen: int):
     s = score_caches[0, :, :, 0:seqlen, 0:seqlen].to(gpu_device)
@@ -105,8 +107,8 @@ def decoding_compute_v(start_pos: int, seqlen: int):
     # print("v_new: ", v_new)
     v_cache_model.save(v_new, start_pos, seqlen)
     # print("first 8: ", v_cache_model.v_cache_first_8)
-    result = v_cache_model.decoding_compute(s, start_pos, seqlen, reference=False)
     result2 = v_cache_model.decoding_compute(s, start_pos, seqlen, reference=True)
+    result = v_cache_model.decoding_compute(s, start_pos, seqlen, reference=False)
     # reference result
     v_total = kv_caches[1, 0, :, 0:start_pos + seqlen, :, :]
     v_total = v_total.to(gpu_device)
@@ -125,8 +127,24 @@ def decoding_compute_v(start_pos: int, seqlen: int):
     # print("o shape: ", o.shape)
     # print(o)
     print("stack result, result2, o: ", torch.stack([result, result2, o, sum], dim=-1))
+    # print("first 8: ", v_cache_model.v_cache_first_8)
 
-n = 50
-prefill_v(n)
-decoding_compute_v(n, 1)
-decoding_compute_v(n+1, 1)
+# n = 70
+# prefill_v(n)
+# decoding_compute_v(n, 1)
+# prefill_k(n)
+# decoding_compute_k(n, 1)
+
+new = torch.tensor([[-0.869140625, 1.572265625, 1.0390625, -0.2076416015625, 0, 0],[-0.672363281, 1.904296875, 0.989257813, 0, 0, 0]], dtype=torch.float16)
+first_8 = ((new.view(torch.int16) >> 8) & 0xFF).to(torch.uint8)
+mid_4 = ((new.view(torch.int16) >> 4) & 0xF).to(torch.uint8)
+mid_4 = mid_4.reshape(2, 3, 2)
+mid_4 = mid_4[:, :, 0] << 4 | mid_4[:, :, 1]
+last_4 = (new.view(torch.int16) & 0xF).to(torch.uint8)
+last_4 = last_4.reshape(2, 3, 2)
+last_4 = last_4[:, :, 0] << 4 | last_4[:, :, 1]
+
+print("new_vector: ", new)
+print("first_8: ", first_8)
+print("mid_4: ", mid_4)
+print("last_4: ", last_4)
